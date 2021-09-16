@@ -17,6 +17,7 @@ const (
 	InvalidBackend       BackendType = ""
 	SecretServiceBackend BackendType = "secret-service"
 	KeychainBackend      BackendType = "keychain"
+	KeyCtlBackend        BackendType = "keyctl"
 	KWalletBackend       BackendType = "kwallet"
 	WinCredBackend       BackendType = "wincred"
 	FileBackend          BackendType = "file"
@@ -33,6 +34,7 @@ var backendOrder = []BackendType{
 	// Linux
 	SecretServiceBackend,
 	KWalletBackend,
+	KeyCtlBackend,
 	// General
 	PassBackend,
 	FileBackend,
