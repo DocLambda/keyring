@@ -119,6 +119,9 @@ var ErrKeyNotFound = errors.New("The specified item could not be found in the ke
 // backend which requires credentials even to see metadata.
 var ErrMetadataNeedsCredentials = errors.New("The keyring backend requires credentials for metadata access")
 
+// ErrMetadataNotSupported is returned when Metadata is not available for the backend.
+var ErrMetadataNotSupported = errors.New("The keyring backend does not support metadata access")
+
 var (
 	// Debug specifies whether to print debugging output
 	Debug bool
