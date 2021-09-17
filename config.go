@@ -32,6 +32,9 @@ type Config struct {
 	// KeyCtlScope is the scope of the kernel keyring (either "user", "session", "process" or "thread")
 	KeyCtlScope string
 
+	// KeyCtlPerm is the permission mask to use for new keys
+	KeyCtlPerm uint32
+
 	// KWalletAppID is the application id for KWallet
 	KWalletAppID string
 

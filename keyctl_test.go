@@ -6,6 +6,7 @@ package keyring_test
 import (
 	"errors"
 	"math/rand"
+	"os"
 	"reflect"
 	"syscall"
 	"testing"
@@ -17,6 +18,8 @@ import (
 )
 
 var ringname = getRandomKeyringName(16)
+
+const ringparent = "thread"
 
 func getRandomKeyringName(length int) string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -31,7 +34,7 @@ func getRandomKeyringName(length int) string {
 }
 
 func doesNamedKeyringExist() (bool, error) {
-	parent, err := keyctl.SessionKeyring()
+	parent, err := keyring.GetKeyringForScope(ringparent)
 	if err != nil {
 		return false, err
 	}
@@ -43,7 +46,7 @@ func doesNamedKeyringExist() (bool, error) {
 }
 
 func cleanupNamedKeyring() {
-	parent, err := keyctl.SessionKeyring()
+	parent, err := keyring.GetKeyringForScope(ringparent)
 	if err != nil {
 		return
 	}
@@ -97,23 +100,23 @@ func TestKeyCtlOpen(t *testing.T) {
 
 func TestKeyCtlOpenNamed(t *testing.T) {
 	if exists, err := doesNamedKeyringExist(); exists {
-		t.Fatalf("ring %q already exists in scope %q", ringname, "user")
+		t.Fatalf("ring %q already exists in scope %q", ringname, ringparent)
 	} else if err != nil {
-		t.Fatalf("checking for ring %q in scope %q failed: %v", ringname, "user", err)
+		t.Fatalf("checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
 	}
 	t.Cleanup(cleanupNamedKeyring)
 
 	_, err := keyring.Open(keyring.Config{
 		AllowedBackends: []keyring.BackendType{keyring.KeyCtlBackend},
-		KeyCtlScope:     "session",
+		KeyCtlScope:     ringparent,
 		ServiceName:     ringname,
 	})
 	if err != nil {
-		t.Fatalf("opening ring %q in scope %q failed: %v", ringname, "user", err)
+		t.Fatalf("opening ring %q in scope %q failed: %v", ringname, ringparent, err)
 	}
 }
 
-func TestKeyCtlSet(t *testing.T) {
+func TestKeyCtlSetFailedPermission(t *testing.T) {
 	kr, err := keyring.Open(keyring.Config{
 		AllowedBackends: []keyring.BackendType{keyring.KeyCtlBackend},
 		KeyCtlScope:     "user",
@@ -132,11 +135,31 @@ func TestKeyCtlSet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	keys, err := kr.Keys()
+	_, err = kr.Get("test")
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected permission denied, got: %v", err)
+	}
+}
+
+func TestKeyCtlSet(t *testing.T) {
+	kr, err := keyring.Open(keyring.Config{
+		AllowedBackends: []keyring.BackendType{keyring.KeyCtlBackend},
+		KeyCtlScope:     "user",
+		KeyCtlPerm:      0x3f3f0000, // "alswrvalswrv------------"
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("got keys: %v", keys)
+
+	item1 := keyring.Item{
+		Key:  "test",
+		Data: []byte("loose lips sink ships"),
+	}
+
+	err = kr.Set(item1)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	item2, err := kr.Get("test")
 	if err != nil {
@@ -160,16 +183,17 @@ func TestKeyCtlSet(t *testing.T) {
 
 func TestKeyCtlSetNamed(t *testing.T) {
 	if exists, err := doesNamedKeyringExist(); exists {
-		t.Fatalf("ring %q already exists in scope %q", ringname, "user")
+		t.Fatalf("ring %q already exists in scope %q", ringname, ringparent)
 	} else if err != nil {
-		t.Fatalf("checking for ring %q in scope %q failed: %v", ringname, "user", err)
+		t.Fatalf("checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
 	}
 	t.Cleanup(cleanupNamedKeyring)
 
 	kr, err := keyring.Open(keyring.Config{
 		AllowedBackends: []keyring.BackendType{keyring.KeyCtlBackend},
-		KeyCtlScope:     "session",
+		KeyCtlScope:     ringparent,
 		ServiceName:     ringname,
+		KeyCtlPerm:      0x3f3f0000, // "alswrvalswrv------------"
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -206,9 +230,18 @@ func TestKeyCtlSetNamed(t *testing.T) {
 }
 
 func TestKeyCtlList(t *testing.T) {
+	if exists, err := doesNamedKeyringExist(); exists {
+		t.Fatalf("ring %q already exists in scope %q", ringname, ringparent)
+	} else if err != nil {
+		t.Fatalf("checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
+	}
+	t.Cleanup(cleanupNamedKeyring)
+
 	kr, err := keyring.Open(keyring.Config{
 		AllowedBackends: []keyring.BackendType{keyring.KeyCtlBackend},
-		KeyCtlScope:     "user",
+		KeyCtlScope:     ringparent,
+		ServiceName:     ringname,
+		KeyCtlPerm:      0x3f3f0000, // "alswrvalswrv------------"
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -240,9 +273,18 @@ func TestKeyCtlList(t *testing.T) {
 }
 
 func TestKeyCtlGetNonExisting(t *testing.T) {
+	if exists, err := doesNamedKeyringExist(); exists {
+		t.Fatalf("ring %q already exists in scope %q", ringname, ringparent)
+	} else if err != nil {
+		t.Fatalf("checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
+	}
+	t.Cleanup(cleanupNamedKeyring)
+
 	kr, err := keyring.Open(keyring.Config{
 		AllowedBackends: []keyring.BackendType{keyring.KeyCtlBackend},
-		KeyCtlScope:     "user",
+		KeyCtlScope:     ringparent,
+		ServiceName:     ringname,
+		KeyCtlPerm:      0x3f3f0000, // "alswrvalswrv------------"
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -255,9 +297,18 @@ func TestKeyCtlGetNonExisting(t *testing.T) {
 }
 
 func TestKeyCtlRemoveNonExisting(t *testing.T) {
+	if exists, err := doesNamedKeyringExist(); exists {
+		t.Fatalf("ring %q already exists in scope %q", ringname, ringparent)
+	} else if err != nil {
+		t.Fatalf("checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
+	}
+	t.Cleanup(cleanupNamedKeyring)
+
 	kr, err := keyring.Open(keyring.Config{
 		AllowedBackends: []keyring.BackendType{keyring.KeyCtlBackend},
-		KeyCtlScope:     "user",
+		KeyCtlScope:     ringparent,
+		ServiceName:     ringname,
+		KeyCtlPerm:      0x3f3f0000, // "alswrvalswrv------------"
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -270,9 +321,18 @@ func TestKeyCtlRemoveNonExisting(t *testing.T) {
 }
 
 func TestKeyCtlListEmptyKeyring(t *testing.T) {
+	if exists, err := doesNamedKeyringExist(); exists {
+		t.Fatalf("ring %q already exists in scope %q", ringname, ringparent)
+	} else if err != nil {
+		t.Fatalf("checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
+	}
+	t.Cleanup(cleanupNamedKeyring)
+
 	kr, err := keyring.Open(keyring.Config{
 		AllowedBackends: []keyring.BackendType{keyring.KeyCtlBackend},
-		KeyCtlScope:     "user",
+		KeyCtlScope:     ringparent,
+		ServiceName:     ringname,
+		KeyCtlPerm:      0x3f3f0000, // "alswrvalswrv------------"
 	})
 	if err != nil {
 		t.Fatal(err)
