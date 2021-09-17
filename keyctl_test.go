@@ -132,11 +132,6 @@ func TestKeyCtlSet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = kr.Set(item1)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	keys, err := kr.Keys()
 	if err != nil {
 		t.Fatal(err)
@@ -144,7 +139,6 @@ func TestKeyCtlSet(t *testing.T) {
 	t.Logf("got keys: %v", keys)
 
 	item2, err := kr.Get("test")
-	item2, err = kr.Get("test")
 	if err != nil {
 		t.Fatal(err)
 	}
