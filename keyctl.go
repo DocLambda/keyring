@@ -1,6 +1,5 @@
-//go:build linux && (386 || amd64)
+//go:build linux
 // +build linux
-// +build 386 amd64
 
 package keyring
 
