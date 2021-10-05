@@ -6,15 +6,14 @@ package keyring_test
 import (
 	"errors"
 	"math/rand"
-	"os"
-	"reflect"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/jsipprell/keyctl"
-
 	"github.com/99designs/keyring"
+	"golang.org/x/sys/unix"
+
+	"github.com/stretchr/testify/require"
 )
 
 var ringname = getRandomKeyringName(16)
@@ -34,11 +33,12 @@ func getRandomKeyringName(length int) string {
 }
 
 func doesNamedKeyringExist() (bool, error) {
-	parent, err := keyring.GetKeyringForScope(ringparent)
+	ringparentID, err := keyring.GetKeyringIDForScope(ringparent)
 	if err != nil {
-		return false, err
+		return false, nil
 	}
-	_, err = keyctl.OpenKeyring(parent, ringname)
+
+	_, err = unix.KeyctlSearch(int(ringparentID), "keyring", ringname, 0)
 	if errors.Is(err, syscall.ENOKEY) {
 		return false, nil
 	}
@@ -46,30 +46,21 @@ func doesNamedKeyringExist() (bool, error) {
 }
 
 func cleanupNamedKeyring() {
-	parent, err := keyring.GetKeyringForScope(ringparent)
-	if err != nil {
-		return
-	}
-	named, err := keyctl.OpenKeyring(parent, ringname)
+	ringparentID, err := keyring.GetKeyringIDForScope(ringparent)
 	if err != nil {
 		return
 	}
 
-	_ = keyctl.UnlinkKeyring(named)
+	named, err := unix.KeyctlSearch(int(ringparentID), "keyring", ringname, 0)
+	if err != nil {
+		return
+	}
+	_, _, err = syscall.Syscall(syscall.SYS_KEYCTL, uintptr(unix.KEYCTL_UNLINK), uintptr(named), uintptr(ringparentID))
 }
 
 func TestKeyCtlIsAvailable(t *testing.T) {
-	found := false
 	backends := keyring.AvailableBackends()
-	for _, b := range backends {
-		if b == keyring.KeyCtlBackend {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("keyctl backends not among %v", backends)
-	}
+	require.Containsf(t, backends, keyring.KeyCtlBackend, "keyctl backends not among %v", backends)
 }
 
 func TestKeyCtlOpenFailWrongScope(t *testing.T) {
@@ -79,9 +70,7 @@ func TestKeyCtlOpenFailWrongScope(t *testing.T) {
 			AllowedBackends: []keyring.BackendType{keyring.KeyCtlBackend},
 			KeyCtlScope:     scope,
 		})
-		if err == nil {
-			t.Fatalf("scope %q should fail", scope)
-		}
+		require.Errorf(t, err, "scope %q should fail", scope)
 	}
 }
 
@@ -92,53 +81,22 @@ func TestKeyCtlOpen(t *testing.T) {
 			AllowedBackends: []keyring.BackendType{keyring.KeyCtlBackend},
 			KeyCtlScope:     scope,
 		})
-		if err != nil {
-			t.Fatalf("scope %q failed: %v", scope, err)
-		}
+		require.NoError(t, err)
 	}
 }
 
 func TestKeyCtlOpenNamed(t *testing.T) {
-	if exists, err := doesNamedKeyringExist(); exists {
-		t.Fatalf("ring %q already exists in scope %q", ringname, ringparent)
-	} else if err != nil {
-		t.Fatalf("checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
-	}
+	exists, err := doesNamedKeyringExist()
+	require.Falsef(t, exists, "ring %q already exists in scope %q", ringname, ringparent)
+	require.NoErrorf(t, err, "checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
 	t.Cleanup(cleanupNamedKeyring)
 
-	_, err := keyring.Open(keyring.Config{
+	_, err = keyring.Open(keyring.Config{
 		AllowedBackends: []keyring.BackendType{keyring.KeyCtlBackend},
 		KeyCtlScope:     ringparent,
 		ServiceName:     ringname,
 	})
-	if err != nil {
-		t.Fatalf("opening ring %q in scope %q failed: %v", ringname, ringparent, err)
-	}
-}
-
-func TestKeyCtlSetFailedPermission(t *testing.T) {
-	kr, err := keyring.Open(keyring.Config{
-		AllowedBackends: []keyring.BackendType{keyring.KeyCtlBackend},
-		KeyCtlScope:     "user",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	item1 := keyring.Item{
-		Key:  "test",
-		Data: []byte("loose lips sink ships"),
-	}
-
-	err = kr.Set(item1)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = kr.Get("test")
-	if !errors.Is(err, os.ErrPermission) {
-		t.Fatalf("expected permission denied, got: %v", err)
-	}
+	require.NoError(t, err)
 }
 
 func TestKeyCtlSet(t *testing.T) {
@@ -147,46 +105,31 @@ func TestKeyCtlSet(t *testing.T) {
 		KeyCtlScope:     "user",
 		KeyCtlPerm:      0x3f3f0000, // "alswrvalswrv------------"
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	item1 := keyring.Item{
 		Key:  "test",
 		Data: []byte("loose lips sink ships"),
 	}
 
-	err = kr.Set(item1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, kr.Set(item1))
 
 	item2, err := kr.Get("test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if !reflect.DeepEqual(item1, item2) {
-		t.Fatalf("Expected %#v, got %#v", item1, item2)
-	}
+	require.Equal(t, item1, item2)
 
-	err = kr.Remove("test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, kr.Remove("test"))
 
 	_, err = kr.Get("test")
-	if err != keyring.ErrKeyNotFound {
-		t.Fatalf("Expected %v, got %v", keyring.ErrKeyNotFound, err)
-	}
+	require.Error(t, err)
+	require.ErrorIs(t, err, keyring.ErrKeyNotFound)
 }
 
 func TestKeyCtlSetNamed(t *testing.T) {
-	if exists, err := doesNamedKeyringExist(); exists {
-		t.Fatalf("ring %q already exists in scope %q", ringname, ringparent)
-	} else if err != nil {
-		t.Fatalf("checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
-	}
+	exists, err := doesNamedKeyringExist()
+	require.Falsef(t, exists, "ring %q already exists in scope %q", ringname, ringparent)
+	require.NoErrorf(t, err, "checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
 	t.Cleanup(cleanupNamedKeyring)
 
 	kr, err := keyring.Open(keyring.Config{
@@ -195,46 +138,31 @@ func TestKeyCtlSetNamed(t *testing.T) {
 		ServiceName:     ringname,
 		KeyCtlPerm:      0x3f3f0000, // "alswrvalswrv------------"
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	item1 := keyring.Item{
 		Key:  "test",
 		Data: []byte("loose lips sink ships"),
 	}
 
-	err = kr.Set(item1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, kr.Set(item1))
 
 	item2, err := kr.Get("test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if !reflect.DeepEqual(item1, item2) {
-		t.Fatalf("Expected %#v, got %#v", item1, item2)
-	}
+	require.Equal(t, item1, item2)
 
-	err = kr.Remove("test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, kr.Remove("test"))
 
 	_, err = kr.Get("test")
-	if err != keyring.ErrKeyNotFound {
-		t.Fatalf("Expected %v, got %v", keyring.ErrKeyNotFound, err)
-	}
+	require.Error(t, err)
+	require.ErrorIs(t, err, keyring.ErrKeyNotFound)
 }
 
 func TestKeyCtlList(t *testing.T) {
-	if exists, err := doesNamedKeyringExist(); exists {
-		t.Fatalf("ring %q already exists in scope %q", ringname, ringparent)
-	} else if err != nil {
-		t.Fatalf("checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
-	}
+	exists, err := doesNamedKeyringExist()
+	require.Falsef(t, exists, "ring %q already exists in scope %q", ringname, ringparent)
+	require.NoErrorf(t, err, "checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
 	t.Cleanup(cleanupNamedKeyring)
 
 	kr, err := keyring.Open(keyring.Config{
@@ -243,41 +171,34 @@ func TestKeyCtlList(t *testing.T) {
 		ServiceName:     ringname,
 		KeyCtlPerm:      0x3f3f0000, // "alswrvalswrv------------"
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	item1 := keyring.Item{
 		Key:  "test",
 		Data: []byte("loose lips sink ships"),
 	}
+	require.NoError(t, kr.Set(item1))
 
-	err = kr.Set(item1)
-	if err != nil {
-		t.Fatal(err)
+	item2 := keyring.Item{
+		Key:  "foobar",
+		Data: []byte("don't foo the bar"),
 	}
+	require.NoError(t, kr.Set(item2))
 
 	keys, err := kr.Keys()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if expected := []string{"test"}; !reflect.DeepEqual(keys, expected) {
-		t.Fatalf("Unexpected keys, got %#v, expected %#v", keys, expected)
-	}
+	expected := []string{"test", "foobar"}
+	require.ElementsMatch(t, keys, expected)
 
-	err = kr.Remove("test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, kr.Remove("test"))
+	require.NoError(t, kr.Remove("foobar"))
 }
 
 func TestKeyCtlGetNonExisting(t *testing.T) {
-	if exists, err := doesNamedKeyringExist(); exists {
-		t.Fatalf("ring %q already exists in scope %q", ringname, ringparent)
-	} else if err != nil {
-		t.Fatalf("checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
-	}
+	exists, err := doesNamedKeyringExist()
+	require.Falsef(t, exists, "ring %q already exists in scope %q", ringname, ringparent)
+	require.NoErrorf(t, err, "checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
 	t.Cleanup(cleanupNamedKeyring)
 
 	kr, err := keyring.Open(keyring.Config{
@@ -286,22 +207,17 @@ func TestKeyCtlGetNonExisting(t *testing.T) {
 		ServiceName:     ringname,
 		KeyCtlPerm:      0x3f3f0000, // "alswrvalswrv------------"
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	_, err = kr.Get("llamas")
-	if err != keyring.ErrKeyNotFound {
-		t.Fatal("Expected ErrKeyNotFound")
-	}
+	require.Error(t, err)
+	require.ErrorIs(t, err, keyring.ErrKeyNotFound)
 }
 
 func TestKeyCtlRemoveNonExisting(t *testing.T) {
-	if exists, err := doesNamedKeyringExist(); exists {
-		t.Fatalf("ring %q already exists in scope %q", ringname, ringparent)
-	} else if err != nil {
-		t.Fatalf("checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
-	}
+	exists, err := doesNamedKeyringExist()
+	require.Falsef(t, exists, "ring %q already exists in scope %q", ringname, ringparent)
+	require.NoErrorf(t, err, "checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
 	t.Cleanup(cleanupNamedKeyring)
 
 	kr, err := keyring.Open(keyring.Config{
@@ -310,22 +226,17 @@ func TestKeyCtlRemoveNonExisting(t *testing.T) {
 		ServiceName:     ringname,
 		KeyCtlPerm:      0x3f3f0000, // "alswrvalswrv------------"
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	err = kr.Remove("no-such-key")
-	if err != keyring.ErrKeyNotFound {
-		t.Fatal("Expected ErrKeyNotFound")
-	}
+	require.Error(t, err)
+	require.ErrorIs(t, err, keyring.ErrKeyNotFound)
 }
 
 func TestKeyCtlListEmptyKeyring(t *testing.T) {
-	if exists, err := doesNamedKeyringExist(); exists {
-		t.Fatalf("ring %q already exists in scope %q", ringname, ringparent)
-	} else if err != nil {
-		t.Fatalf("checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
-	}
+	exists, err := doesNamedKeyringExist()
+	require.Falsef(t, exists, "ring %q already exists in scope %q", ringname, ringparent)
+	require.NoErrorf(t, err, "checking for ring %q in scope %q failed: %v", ringname, ringparent, err)
 	t.Cleanup(cleanupNamedKeyring)
 
 	kr, err := keyring.Open(keyring.Config{
@@ -334,15 +245,9 @@ func TestKeyCtlListEmptyKeyring(t *testing.T) {
 		ServiceName:     ringname,
 		KeyCtlPerm:      0x3f3f0000, // "alswrvalswrv------------"
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	keys, err := kr.Keys()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(keys) != 0 {
-		t.Fatalf("Expected 0 keys, got %d", len(keys))
-	}
+	require.NoError(t, err)
+	require.Len(t, keys, 0)
 }
